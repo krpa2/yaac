@@ -7,8 +7,9 @@
  *
  * The session opens on the first wake word, audio captured while connecting is
  * queued, and it stays open for GEMINI_IDLE_CLOSE_S after the last activity so
- * follow-up turns ("yes, save it") keep their context. Replies are printed to
- * the debug log; reply audio is received but not played yet. */
+ * follow-up turns ("yes, save it") keep their context. Replies are spoken on the
+ * speaker (playback.c, 24 -> 16 kHz) and their transcripts printed to the log;
+ * an "interrupted" message from the server flushes the speaker (barge-in). */
 #include <stdbool.h>
 #include <stdint.h>
 

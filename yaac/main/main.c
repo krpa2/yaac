@@ -5,7 +5,7 @@
  *   ES7210 (MIC1, echo reference, MIC2) -> ESP-SR AFE:
  *     AEC (echo cancellation against the speaker reference) -> SE (2-mic speech
  *     enhancement) -> VAD -> WakeNet9l "Hey GiGi"
- *   On the wake word: a chime on the speaker (cancelled by AEC, so it does not
+ *   On the wake word: any reply still playing stops, a chime plays (cancelled by AEC, so it does not
  *   re-trigger) and the screen switches to LISTENING with a live trace of the
  *   cleaned-up audio until the speaker goes quiet.
  *
@@ -38,6 +38,7 @@
 #include "display.h"
 #include "net_stream.h"
 #include "gemini_live.h"
+#include "playback.h"
 #include "scope_draw.h"
 
 static const char *TAG = "yaac";
@@ -209,6 +210,7 @@ static void fetch_task(void *arg)
                      WAKE_WORD_TEXT, wake_count, res->trigger_channel_id, res->data_volume);
             listen_start_us = last_speech_us = now;
             state = STATE_LISTENING;
+            playback_clear();       /* barge-in: stop any reply that is still playing */
             xTaskNotifyGive(chime_task_handle);
 
             /* Start a network session with the wake word itself as pre-roll
@@ -269,7 +271,7 @@ static void chime_task(void *arg)
                 const float env = sinf((float)M_PI * i / len);     /* no clicks */
                 tone[i] = (int16_t)(9000.0f * env * sinf(2.0f * (float)M_PI * freqs[t] * i / AUDIO_SAMPLE_RATE));
             }
-            audio_play(tone, len);
+            playback_push(tone, len);   /* through the player: one writer to the speaker */
         }
     }
 }
@@ -306,6 +308,8 @@ static void ui_task(void *arg)
 
         if (listening) {
             draw_centered(40, "LISTENING...", 4, COL_TEXT);
+        } else if (playback_active()) {
+            draw_centered(40, "SPEAKING...", 4, COL_VOICE);
         } else {
             draw_centered(40, "SAY \"" WAKE_WORD_TEXT "\"", 4, COL_TEXT);
         }
@@ -403,6 +407,7 @@ void app_main(void)
     display_present();
 
     audio_io_init(i2c_bus);
+    playback_init();
     net_stream_init();      /* connects in the background */
     afe_init();
     const audio_post_config_t post = {

@@ -2,7 +2,7 @@
 set(POC_DIR "${CMAKE_CURRENT_LIST_DIR}/../voice-coffee-assistant-poc-main")
 
 idf_component_register(SRCS "main.c" "audio_io.c" "display.c" "scope_draw.c" "net_stream.c" "audio_post.c"
-                            "gemini_live.c" "coffee_machine.c"
+                            "gemini_live.c" "coffee_machine.c" "playback.c"
                        INCLUDE_DIRS "."
                        EMBED_TXTFILES "${POC_DIR}/tools.json" "${POC_DIR}/system_prompt.md"
                        REQUIRES board_power esp_lcd esp_driver_spi esp_driver_i2s esp_driver_ledc

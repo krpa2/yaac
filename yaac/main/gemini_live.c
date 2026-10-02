@@ -11,8 +11,10 @@
 #include "esp_websocket_client.h"
 #include "mbedtls/base64.h"
 #include "cJSON.h"
+#include <stdlib.h>
 #include "coffee_machine.h"
 #include "gemini_live.h"
+#include "playback.h"
 #include "gemini_key.h"         /* generated at build time from yaac/API_key.txt */
 
 static const char *TAG = "gemini";
@@ -99,6 +101,32 @@ static void flush_transcripts(void)
 
 /* ---- downlink ------------------------------------------------------------ */
 
+/* Reply audio: base64 16-bit mono PCM, normally "audio/pcm;rate=24000" */
+static void play_reply_audio(const char *b64, const char *mime)
+{
+    const size_t b64_len = strlen(b64);
+    const size_t cap = b64_len / 4 * 3 + 4;
+    unsigned char *pcm = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
+    if (!pcm) return;
+    size_t len = 0;
+    if (mbedtls_base64_decode(pcm, cap, &len, (const unsigned char *)b64, b64_len) == 0) {
+        const char *r = strstr(mime, "rate=");
+        const int rate = r ? atoi(r + 5) : 24000;
+        if (rate == 24000) {
+            playback_push_24k((const int16_t *)pcm, len / 2);
+        } else if (rate == 16000) {
+            playback_push((const int16_t *)pcm, len / 2);
+        } else {
+            static bool warned;
+            if (!warned) ESP_LOGW(TAG, "unsupported reply audio rate %d", rate);
+            warned = true;
+        }
+        audio_chunks++;
+        audio_bytes += len;
+    }
+    heap_caps_free(pcm);
+}
+
 static void handle_tool_call(const cJSON *tc)
 {
     cJSON *resp = cJSON_CreateObject();
@@ -157,14 +185,16 @@ static void handle_message(const char *json, int len)
         }
         const cJSON *part;
         cJSON_ArrayForEach(part, cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(sc, "modelTurn"), "parts")) {
-            const cJSON *data = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(part, "inlineData"), "data");
-            if (cJSON_IsString(data)) {
-                audio_chunks++;
-                audio_bytes += strlen(data->valuestring) * 3 / 4;     /* 24 kHz PCM, not played yet */
+            const cJSON *inl = cJSON_GetObjectItemCaseSensitive(part, "inlineData");
+            const cJSON *mime = cJSON_GetObjectItemCaseSensitive(inl, "mimeType");
+            const cJSON *data = cJSON_GetObjectItemCaseSensitive(inl, "data");
+            if (cJSON_IsString(data) && cJSON_IsString(mime) && strncmp(mime->valuestring, "audio/pcm", 9) == 0) {
+                play_reply_audio(data->valuestring, mime->valuestring);
             }
         }
         if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(sc, "interrupted"))) {
-            ESP_LOGI(TAG, "[interrupted by user]");
+            playback_clear();
+            ESP_LOGI(TAG, "[interrupted by user: speaker buffer flushed]");
         }
         if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(sc, "turnComplete"))) {
             flush_transcripts();
