@@ -1,0 +1,101 @@
+#include <string.h>
+#include "scope_draw.h"
+
+static uint16_t *fb;
+
+/* Landscape (x, y) -> panel-order index: panel row = x, panel column = W-1-y */
+#define FB_INDEX(x, y)  ((x) * PANEL_W + (PANEL_W - 1 - (y)))
+
+void draw_bind(uint16_t *framebuffer)
+{
+    fb = framebuffer;
+}
+
+void draw_clear(uint16_t color)
+{
+    if (color == 0) {
+        memset(fb, 0, PANEL_W * PANEL_H * sizeof(uint16_t));
+        return;
+    }
+    const uint16_t c = PANEL_COLOR(color);
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) fb[i] = c;
+}
+
+void draw_pixel(int x, int y, uint16_t color)
+{
+    if ((unsigned)x >= SCREEN_W || (unsigned)y >= SCREEN_H) return;
+    fb[FB_INDEX(x, y)] = PANEL_COLOR(color);
+}
+
+void draw_vline(int x, int y0, int y1, uint16_t color)
+{
+    if ((unsigned)x >= SCREEN_W) return;
+    if (y0 > y1) { int t = y0; y0 = y1; y1 = t; }
+    if (y0 < 0) y0 = 0;
+    if (y1 >= SCREEN_H) y1 = SCREEN_H - 1;
+    /* A landscape column is contiguous in panel memory (y runs backwards) */
+    uint16_t *p = &fb[FB_INDEX(x, y1)];
+    const uint16_t c = PANEL_COLOR(color);
+    for (int y = y0; y <= y1; y++) *p++ = c;
+}
+
+void draw_hline_dotted(int x0, int x1, int y, int step, uint16_t color)
+{
+    for (int x = x0; x <= x1; x += step) draw_pixel(x, y, color);
+}
+
+void draw_vline_dotted(int x, int y0, int y1, int step, uint16_t color)
+{
+    for (int y = y0; y <= y1; y += step) draw_pixel(x, y, color);
+}
+
+void draw_fill_rect(int x, int y, int w, int h, uint16_t color)
+{
+    for (int i = 0; i < w; i++) draw_vline(x + i, y, y + h - 1, color);
+}
+
+/* Classic 5x7 glyphs, one byte per column, bit 0 = top row */
+static const struct { char ch; uint8_t col[5]; } font[] = {
+    {' ', {0x00, 0x00, 0x00, 0x00, 0x00}}, {'-', {0x08, 0x08, 0x08, 0x08, 0x08}},
+    {'.', {0x00, 0x60, 0x60, 0x00, 0x00}}, {':', {0x00, 0x36, 0x36, 0x00, 0x00}},
+    {'/', {0x20, 0x10, 0x08, 0x04, 0x02}}, {'%', {0x23, 0x13, 0x08, 0x64, 0x62}},
+    {'0', {0x3E, 0x51, 0x49, 0x45, 0x3E}}, {'1', {0x00, 0x42, 0x7F, 0x40, 0x00}},
+    {'2', {0x42, 0x61, 0x51, 0x49, 0x46}}, {'3', {0x21, 0x41, 0x45, 0x4B, 0x31}},
+    {'4', {0x18, 0x14, 0x12, 0x7F, 0x10}}, {'5', {0x27, 0x45, 0x45, 0x45, 0x39}},
+    {'6', {0x3C, 0x4A, 0x49, 0x49, 0x30}}, {'7', {0x01, 0x71, 0x09, 0x05, 0x03}},
+    {'8', {0x36, 0x49, 0x49, 0x49, 0x36}}, {'9', {0x06, 0x49, 0x49, 0x29, 0x1E}},
+    {'A', {0x7C, 0x12, 0x11, 0x12, 0x7C}}, {'B', {0x7F, 0x49, 0x49, 0x49, 0x36}},
+    {'C', {0x3E, 0x41, 0x41, 0x41, 0x22}}, {'D', {0x7F, 0x41, 0x41, 0x22, 0x1C}},
+    {'E', {0x7F, 0x49, 0x49, 0x49, 0x41}}, {'F', {0x7F, 0x09, 0x09, 0x09, 0x01}},
+    {'G', {0x3E, 0x41, 0x49, 0x49, 0x7A}}, {'H', {0x7F, 0x08, 0x08, 0x08, 0x7F}},
+    {'I', {0x00, 0x41, 0x7F, 0x41, 0x00}}, {'K', {0x7F, 0x08, 0x14, 0x22, 0x41}},
+    {'L', {0x7F, 0x40, 0x40, 0x40, 0x40}}, {'M', {0x7F, 0x02, 0x0C, 0x02, 0x7F}},
+    {'N', {0x7F, 0x04, 0x08, 0x10, 0x7F}}, {'O', {0x3E, 0x41, 0x41, 0x41, 0x3E}},
+    {'P', {0x7F, 0x09, 0x09, 0x09, 0x06}}, {'R', {0x7F, 0x09, 0x19, 0x29, 0x46}},
+    {'S', {0x46, 0x49, 0x49, 0x49, 0x31}}, {'T', {0x01, 0x01, 0x7F, 0x01, 0x01}},
+    {'U', {0x3F, 0x40, 0x40, 0x40, 0x3F}}, {'V', {0x1F, 0x20, 0x40, 0x20, 0x1F}},
+    {'W', {0x3F, 0x40, 0x38, 0x40, 0x3F}}, {'X', {0x63, 0x14, 0x08, 0x14, 0x63}},
+    {'Z', {0x61, 0x51, 0x49, 0x45, 0x43}}, {'d', {0x38, 0x44, 0x44, 0x48, 0x7F}},
+};
+
+static const uint8_t *glyph(char c)
+{
+    for (size_t i = 0; i < sizeof(font) / sizeof(font[0]); i++) {
+        if (font[i].ch == c) return font[i].col;
+    }
+    return font[0].col;     /* unknown -> blank */
+}
+
+int draw_text(int x, int y, const char *text, int scale, uint16_t color)
+{
+    for (; *text; text++) {
+        const uint8_t *g = glyph(*text);
+        for (int cx = 0; cx < 5; cx++) {
+            for (int cy = 0; cy < 7; cy++) {
+                if (g[cx] & (1 << cy)) draw_fill_rect(x + cx * scale, y + cy * scale, scale, scale, color);
+            }
+        }
+        x += 6 * scale;
+    }
+    return x;
+}

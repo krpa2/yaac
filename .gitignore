@@ -1,0 +1,18 @@
+# ESP-IDF build output and downloaded components
+build/
+managed_components/
+dependencies.lock
+sdkconfig.old
+
+# PC simulation output
+pc_sim/build/
+*.wav
+*.exe
+*.obj
+
+# Third-party material kept locally (not ours to version)
+docs/waveshare-demo-repo/
+docs/datasheets/
+
+# Factory firmware dump (16 MB, kept locally in firmware_backup/)
+firmware_backup/*.bin
