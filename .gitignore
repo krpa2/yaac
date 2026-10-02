@@ -16,3 +16,12 @@ docs/datasheets/
 
 # Factory firmware dump (16 MB, kept locally in firmware_backup/)
 firmware_backup/*.bin
+
+# Local secrets
+yaac/main/wifi_credentials.h
+yaac/API_key.txt
+yaac/main/gemini_credentials.h
+
+# Python / IDE clutter
+__pycache__/
+.idea/

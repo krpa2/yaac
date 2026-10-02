@@ -1,0 +1,110 @@
+{
+  "_comment": "Single source of truth for the functions. The script sends it to Gemini in the setup message (stripping x-* and _* keys) and uses it to validate tool calls exactly like the firmware will. x-range keys are numeric constraints enforced on the device only.",
+  "functionDeclarations": [
+    {
+      "name": "brew",
+      "description": "Brew a drink. Use it whenever the user asks to make, prepare or brew something. Omit every parameter the user did not mention: the machine will use the saved settings for that drink. Never convert to millilitres or degrees: use only the provided levels.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "drink": {
+            "type": "STRING",
+            "enum": ["espresso", "coffee", "lungo", "americano", "ristretto", "cappuccino", "latte_macchiato", "caffe_latte", "flat_white", "hot_milk", "hot_water"],
+            "description": "Drink to brew. A generic 'a coffee' = coffee; 'an espresso' = espresso; 'ristretto' = ristretto."
+          },
+          "strength": {
+            "type": "INTEGER",
+            "x-range": [1, 5],
+            "description": "Aroma strength from 1 to 5 (the machine's strength bars). strong/intense = 4, very strong = 5, mild/light = 2, very mild = 1. 'Stronger than usual' = saved value + 1 (read it with get_drink_settings)."
+          },
+          "coffee_length": {
+            "type": "STRING",
+            "enum": ["short", "normal", "long", "extra_long"],
+            "description": "Amount of coffee in the cup. short/small/little = short; long/lengthened/generous = long; very long/big cup/mug = extra_long."
+          },
+          "milk_amount": {
+            "type": "STRING",
+            "enum": ["less", "normal", "more"],
+            "description": "Milk drinks only. less milk/darker = less; more milk/lighter/creamier = more."
+          },
+          "temperature": {
+            "type": "STRING",
+            "enum": ["low", "normal", "high"],
+            "description": "very hot/piping hot = high; warm/not too hot/for kids = low."
+          },
+          "extra_shot": {
+            "type": "BOOLEAN",
+            "description": "true when the user asks for a 'double' meaning a stronger single cup (additional shot)."
+          },
+          "cups": {
+            "type": "INTEGER",
+            "x-range": [1, 2],
+            "description": "Number of cups: 'two coffees' = 2. If 'double' is ambiguous (two cups or stronger) ask the user."
+          }
+        },
+        "required": ["drink"]
+      }
+    },
+    {
+      "name": "brew_saved",
+      "description": "Brew a saved drink: 'the usual' / 'my favourite' = favorite; 'same as before' / 'another one' / 'do it again' = last.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "which": {"type": "STRING", "enum": ["favorite", "last"]}
+        },
+        "required": ["which"]
+      }
+    },
+    {
+      "name": "stop",
+      "description": "Immediately stop the brewing in progress. Use it as soon as the user says stop, enough, halt, that's too much.",
+      "parameters": {"type": "OBJECT", "properties": {}}
+    },
+    {
+      "name": "get_drink_settings",
+      "description": "Read the saved settings of a drink (strength, length, milk, temperature). Use it before relative adjustments such as 'stronger than usual' or when the user asks how a drink is configured.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "drink": {"type": "STRING", "enum": ["espresso", "coffee", "lungo", "americano", "ristretto", "cappuccino", "latte_macchiato", "caffe_latte", "flat_white", "hot_milk", "hot_water"]}
+        },
+        "required": ["drink"]
+      }
+    },
+    {
+      "name": "save_drink_settings",
+      "description": "Permanently save the settings of a drink ('from now on', 'always', 'set my coffee longer') or save it as the favourite. First call with confirmed=false, repeat to the user what will change, and call again with confirmed=true only after an explicit yes.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "drink": {"type": "STRING", "enum": ["espresso", "coffee", "lungo", "americano", "ristretto", "cappuccino", "latte_macchiato", "caffe_latte", "flat_white", "hot_milk", "hot_water"]},
+          "strength": {"type": "INTEGER", "x-range": [1, 5]},
+          "coffee_length": {"type": "STRING", "enum": ["short", "normal", "long", "extra_long"]},
+          "milk_amount": {"type": "STRING", "enum": ["less", "normal", "more"]},
+          "temperature": {"type": "STRING", "enum": ["low", "normal", "high"]},
+          "as_favorite": {"type": "BOOLEAN", "description": "true to save it as 'the usual'."},
+          "confirmed": {"type": "BOOLEAN"}
+        },
+        "required": ["drink", "confirmed"]
+      }
+    },
+    {
+      "name": "get_machine_status",
+      "description": "Machine status: water tank, beans, drip tray, grounds container, water filter, descaling, brewing in progress. Use it when the user asks how the machine is doing or why it does not work.",
+      "parameters": {"type": "OBJECT", "properties": {}}
+    },
+    {
+      "name": "start_maintenance",
+      "description": "Start a maintenance procedure. First call with confirmed=false to get what is needed (e.g. water, descaler, container), explain it to the user, and call again with confirmed=true only after an explicit yes.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "procedure": {"type": "STRING", "enum": ["rinse", "clean_milk_circuit", "descale", "replace_water_filter"]},
+          "confirmed": {"type": "BOOLEAN"}
+        },
+        "required": ["procedure", "confirmed"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     ,        0x6000,
+phy_init, data, phy,     ,        0x1000,
+factory,  app,  factory, ,        6M,
+# ESP-SR models (srmodels.bin, flashed by the esp-sr build); room for an English MultiNet later
+model,    data, spiffs,  ,        8M,

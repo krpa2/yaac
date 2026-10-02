@@ -1,0 +1,4 @@
+websockets>=12
+sounddevice>=0.4.6
+numpy>=1.24
+python-dotenv>=1.0

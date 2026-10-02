@@ -1,0 +1,29 @@
+#pragma once
+
+/* Gemini Live API client (raw protocol, same as voice-coffee-assistant-poc-main/
+ * gemini_live_mic.py): TLS WebSocket to generativelanguage.googleapis.com,
+ * "setup" message with the system prompt and tools.json, 16 kHz PCM uplink in
+ * base64 32 ms chunks, transcriptions + toolCall handling on the downlink.
+ *
+ * The session opens on the first wake word, audio captured while connecting is
+ * queued, and it stays open for GEMINI_IDLE_CLOSE_S after the last activity so
+ * follow-up turns ("yes, save it") keep their context. Replies are printed to
+ * the debug log; reply audio is received but not played yet. */
+#include <stdbool.h>
+#include <stdint.h>
+
+#define GEMINI_MODEL            "gemini-2.5-flash-native-audio-preview-09-2025"
+#define GEMINI_IDLE_CLOSE_S     60
+
+void gemini_init(void);
+
+/* Wake word detected: open the session if needed and start a user turn */
+void gemini_turn_begin(void);
+
+/* Audio after the wake word (16 kHz mono); never blocks, drops when the queue is full */
+void gemini_push_audio(const int16_t *pcm, int n);
+
+/* Listening ended: tell Gemini the user's audio stream is over */
+void gemini_turn_end(void);
+
+bool gemini_session_ready(void);
