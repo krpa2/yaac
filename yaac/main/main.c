@@ -50,13 +50,14 @@ static const char *TAG = "yaac";
 #define WAKE_WORD_TEXT      "HEY GIGI"
 
 #define LISTEN_TIMEOUT_MS   30000   /* hard limit: stop listening this long after the wake word */
-
-#define LISTEN_SILENCE_MS   1200    /* ...or after this much silence following speech */
+#define LISTEN_START_MS     5000    /* wait this long after the wake word for the command to start */
+#define LISTEN_SILENCE_MS   1200    /* once it has started: end after this much silence */
+#define WAKE_TAIL_MS        500     /* speech this soon after detection is the wake word's own tail */
 
 /* Audio tuning (see README "Audio tuning"). With WakeNet active, ESP-SR's AFE
  * refuses WebRTC AGC/NS, so they run after the AFE (audio_post.c) on the audio
  * that feeds the screen and the UDP stream; wake word detection is unaffected. */
-#define AFE_OUTPUT_GAIN         4.0f    /* AFE linear output gain (0.1..10): +12 dB */
+#define AFE_OUTPUT_GAIN         2.0f    /* AFE linear output gain (0.1..10): +6 dB */
 #define POST_NS_MODE            1       /* WebRTC NS: -1 off, 0 mild, 1 medium, 2 aggressive */
 #define POST_AGC                true    /* WebRTC AGC, adaptive digital */
 #define AGC_TARGET_LEVEL_DBFS   3       /* AGC output target: -3 dBFS */
@@ -90,6 +91,7 @@ static TaskHandle_t chime_task_handle;
 /* Shared between fetch and ui tasks (single writer each, small values) */
 static volatile yaac_state_t state = STATE_IDLE;
 static volatile int64_t listen_start_us, last_speech_us;
+static bool command_started;    /* speech heard after the wake word (fetch task only) */
 static volatile bool voice;
 static volatile float volume_dbfs = -90.0f;
 static volatile int wake_count;
@@ -203,12 +205,19 @@ static void fetch_task(void *arg)
         const int64_t now = esp_timer_get_time();
         voice = res->vad_state == VAD_SPEECH;
         if (voice) last_speech_us = now;
+        /* The command has started once the VAD hears speech after the wake word's own tail */
+        if (voice && state == STATE_LISTENING && !command_started &&
+            now - listen_start_us > WAKE_TAIL_MS * 1000LL) {
+            command_started = true;
+            ESP_LOGI(TAG, "Command started %.1f s after the wake word", (now - listen_start_us) / 1e6);
+        }
 
         if (res->wakeup_state == WAKENET_DETECTED) {
             wake_count++;
             ESP_LOGI(TAG, "\"%s\" detected (#%d, channel %d, volume %.1f dBFS)",
                      WAKE_WORD_TEXT, wake_count, res->trigger_channel_id, res->data_volume);
             listen_start_us = last_speech_us = now;
+            command_started = false;
             state = STATE_LISTENING;
             playback_clear();       /* barge-in: stop any reply that is still playing */
             xTaskNotifyGive(chime_task_handle);
@@ -242,13 +251,16 @@ static void fetch_task(void *arg)
                 if (abs(s) > session_peak) session_peak = abs(s);
             }
             session_samples += n;
+            /* Before the command starts: wait up to LISTEN_START_MS for it.
+             * Once it has started: end after LISTEN_SILENCE_MS of silence. */
             const bool timeout = now - listen_start_us > LISTEN_TIMEOUT_MS * 1000LL;
-            const bool silence = now - last_speech_us > LISTEN_SILENCE_MS * 1000LL &&
-                                 now - listen_start_us > LISTEN_SILENCE_MS * 1000LL;
-            if (timeout || silence) {
+            const bool no_command = !command_started && now - listen_start_us > LISTEN_START_MS * 1000LL;
+            const bool silence = command_started && now - last_speech_us > LISTEN_SILENCE_MS * 1000LL;
+            if (timeout || no_command || silence) {
                 const double rms = sqrt(session_sum_sq / (session_samples ? session_samples : 1));
                 ESP_LOGI(TAG, "Back to idle (%s) after %.1f s; output RMS %.1f dBFS, peak %.1f dBFS",
-                         timeout ? "timeout" : "silence", (now - listen_start_us) / 1e6,
+                         timeout ? "timeout" : no_command ? "no command after the wake word" : "silence",
+                         (now - listen_start_us) / 1e6,
                          20.0 * log10(rms / 32768.0 + 1e-9), 20.0 * log10(session_peak / 32768.0 + 1e-9));
                 state = STATE_IDLE;
                 net_stream_end();

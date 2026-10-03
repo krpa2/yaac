@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include "coffee_machine.h"
 #include "gemini_live.h"
+#include "net_stream.h"
 #include "playback.h"
 #include "gemini_key.h"         /* generated at build time from yaac/API_key.txt */
 
@@ -42,7 +43,17 @@ static QueueHandle_t queue;
 static cJSON *tools_root;       /* parsed tools.json (keeps x-range for validation) */
 static esp_websocket_client_handle_t ws;
 static volatile bool ws_connected, setup_sent, ready, closing;
-static volatile bool want_session;
+static volatile bool want_session;      /* a user turn is in progress (wake word .. idle) */
+
+/* Always-open session: reconnect with backoff, resume the conversation with the
+ * latest handle from sessionResumptionUpdate */
+#define BACKOFF_MIN_MS  1000
+#define BACKOFF_MAX_MS  30000
+static char resume_handle[256];
+static bool resume_tried;               /* the current setup used resume_handle */
+static volatile bool go_away;           /* server announced it will close this session */
+static int backoff_ms = BACKOFF_MIN_MS;
+static int64_t next_connect_us;
 static volatile int64_t last_activity_us, connect_start_us;
 
 /* Downlink reassembly + transcripts (only touched from the websocket task) */
@@ -165,7 +176,19 @@ static void handle_message(const char *json, int len)
 
     if (cJSON_GetObjectItemCaseSensitive(msg, "setupComplete")) {
         ready = true;
-        ESP_LOGI(TAG, "Session ready in %lld ms (TLS + setup)", (esp_timer_get_time() - connect_start_us) / 1000);
+        backoff_ms = BACKOFF_MIN_MS;
+        ESP_LOGI(TAG, "Session ready in %lld ms (TLS + setup%s)", (esp_timer_get_time() - connect_start_us) / 1000,
+                 resume_tried ? ", conversation resumed" : "");
+    }
+
+    /* Keep the newest resumable handle: used if the connection has to be reopened */
+    const cJSON *sru = cJSON_GetObjectItemCaseSensitive(msg, "sessionResumptionUpdate");
+    if (sru) {
+        const cJSON *h = cJSON_GetObjectItemCaseSensitive(sru, "newHandle");
+        if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(sru, "resumable")) && cJSON_IsString(h) &&
+            strlen(h->valuestring) < sizeof(resume_handle)) {
+            strcpy(resume_handle, h->valuestring);
+        }
     }
 
     const cJSON *sc = cJSON_GetObjectItemCaseSensitive(msg, "serverContent");
@@ -218,8 +241,9 @@ static void handle_message(const char *json, int len)
     const cJSON *ga = cJSON_GetObjectItemCaseSensitive(msg, "goAway");
     if (ga) {
         const cJSON *tl = cJSON_GetObjectItemCaseSensitive(ga, "timeLeft");
-        ESP_LOGW(TAG, "[goAway: server will close in %s]", cJSON_IsString(tl) ? tl->valuestring : "?");
-        closing = true;
+        ESP_LOGW(TAG, "[goAway: server will close in %s, reconnecting with resumption]",
+                 cJSON_IsString(tl) ? tl->valuestring : "?");
+        go_away = true;     /* the task reconnects as soon as no turn/reply is in progress */
     }
     cJSON_Delete(msg);
 }
@@ -348,12 +372,20 @@ static void send_setup(void)
     cJSON_AddItemToArray(tools, t);
     cJSON_AddObjectToObject(setup, "inputAudioTranscription");
     cJSON_AddObjectToObject(setup, "outputAudioTranscription");
+    /* Long-lived session: resume the previous conversation after a reconnect,
+     * and let the server slide the context window instead of ending the session */
+    cJSON *res = cJSON_AddObjectToObject(setup, "sessionResumption");
+    resume_tried = resume_handle[0] != 0;
+    if (resume_tried) cJSON_AddStringToObject(res, "handle", resume_handle);
+    cJSON *cwc = cJSON_AddObjectToObject(setup, "contextWindowCompression");
+    cJSON_AddObjectToObject(cwc, "slidingWindow");
 
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     const int len = strlen(json);
     const int sent = esp_websocket_client_send_text(ws, json, len, pdMS_TO_TICKS(5000));
-    ESP_LOGI(TAG, "setup sent (%d bytes%s)", len, sent == len ? "" : ", FAILED");
+    ESP_LOGI(TAG, "setup sent (%d bytes%s, %s)", len, sent == len ? "" : ", FAILED",
+             resume_tried ? "resuming previous conversation" : "new conversation");
     cJSON_free(json);
     setup_sent = true;
 }
@@ -374,17 +406,30 @@ static void gemini_task(void *arg)
 {
     static item_t it;
     for (;;) {
-        /* Session management */
-        if (ws && (closing || (!ws_connected && esp_timer_get_time() - connect_start_us > 15000000))) {
-            session_close(closing ? "connection ended" : "connect timeout");
-            want_session = false;       /* no reconnect loop; the next wake word reopens it */
+        /* Session management: always open while Wi-Fi is up */
+        const int64_t now = esp_timer_get_time();
+        if (ws && go_away && !want_session && !playback_active() && uxQueueMessagesWaiting(queue) == 0) {
+            closing = true;     /* planned reconnect between turns */
         }
-        if (want_session && !ws) session_open();
+        const bool connect_timeout = ws && !ready && now - connect_start_us > 20000000;
+        if (ws && (closing || connect_timeout)) {
+            const bool was_ready = ready, planned = go_away;
+            session_close(connect_timeout ? "connect timeout" : planned ? "goAway" : "connection ended");
+            go_away = false;
+            if (!was_ready && resume_tried) {
+                ESP_LOGW(TAG, "Resuming the previous conversation failed: starting a new one");
+                resume_handle[0] = 0;
+                next_connect_us = now;
+            } else if (planned) {
+                next_connect_us = now;
+            } else {
+                next_connect_us = now + backoff_ms * 1000LL;
+                ESP_LOGI(TAG, "Reconnecting in %d s", backoff_ms / 1000);
+                backoff_ms = backoff_ms * 2 > BACKOFF_MAX_MS ? BACKOFF_MAX_MS : backoff_ms * 2;
+            }
+        }
+        if (!ws && net_stream_connected() && now >= next_connect_us) session_open();
         if (ws && ws_connected && !setup_sent) send_setup();
-        if (ws && ready && !want_session && uxQueueMessagesWaiting(queue) == 0 &&
-            esp_timer_get_time() - last_activity_us > GEMINI_IDLE_CLOSE_S * 1000000LL) {
-            session_close("idle");
-        }
 
         /* Hold queued audio until the session is ready (setupComplete) */
         if (!ready) {
@@ -471,7 +516,7 @@ void gemini_turn_end(void)
     it.samples = 0;
     it.text = NULL;
     xQueueSend(queue, &it, 0);
-    want_session = false;       /* the session stays open (idle timeout) for follow-ups */
+    want_session = false;       /* the session itself stays open */
 }
 
 bool gemini_session_ready(void) { return ready; }

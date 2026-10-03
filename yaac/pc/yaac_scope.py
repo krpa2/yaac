@@ -4,7 +4,10 @@
 Receives the UDP broadcast audio that the YAAC board sends on the local network
 after its wake word and draws it as an oscilloscope. Standard library only (tkinter).
 
-    python yaac_scope.py [--window 2.0] [--save recordings] [--bind 192.168.0.20]
+    python yaac_scope.py [--window 2.0] [--save recordings] [--rec-dir DIR] [--bind 192.168.0.20]
+
+The REC button records everything received until it is pressed again into
+REC_<yyyymmdd>_<hhmmss>.wav (16 kHz mono), across wake-word sessions.
 
 Packet format (little endian, see yaac/main/net_stream.h):
     char[4] "YAAC", u8 version, u8 flags (1=start, 2=end), u16 samples,
@@ -26,8 +29,8 @@ PORT = 5577
 HEADER = struct.Struct("<4sBBHIII")
 FLAG_START, FLAG_END = 0x01, 0x02
 
-BG, GRID, AXIS, TRACE, TEXT, LIVE, ENDED = (
-    "#0b0f14", "#1c2530", "#33414f", "#50dcff", "#c8ccd4", "#3cff78", "#ffc828")
+BG, GRID, AXIS, TRACE, TEXT, LIVE, ENDED, REC = (
+    "#0b0f14", "#1c2530", "#33414f", "#50dcff", "#c8ccd4", "#3cff78", "#ffc828", "#ff4d5a")
 
 
 class Receiver(threading.Thread):
@@ -48,6 +51,9 @@ class Receiver(threading.Thread):
         self.save_dir = save_dir
         self.wav = None
         self.wav_name = ""
+        self.rec = None             # manual recording (REC button), independent of sessions
+        self.rec_name = ""
+        self.rec_frames = 0
 
         self.sender = ""
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
@@ -72,6 +78,35 @@ class Receiver(threading.Thread):
             self.wav.close()
             print(f"saved {self.wav_name}")
             self.wav = None
+
+    def start_recording(self, rec_dir):
+        """Record everything received from now on to rec_dir/REC_<yyyymmdd>_<hhmmss>.wav"""
+        with self.lock:
+            if self.rec:
+                return self.rec_name
+            os.makedirs(rec_dir, exist_ok=True)
+            name = datetime.now().strftime("REC_%Y%m%d_%H%M%S.wav")
+            self.rec_name = os.path.join(rec_dir, name)
+            self.rec = wave.open(self.rec_name, "wb")
+            self.rec.setnchannels(1)
+            self.rec.setsampwidth(2)
+            self.rec.setframerate(self.rate or 16000)
+            self.rec_frames = 0
+            print(f"recording to {self.rec_name}")
+            return self.rec_name
+
+    def stop_recording(self):
+        with self.lock:
+            if not self.rec:
+                return None
+            self.rec.close()
+            self.rec = None
+            print(f"saved {self.rec_name} ({self.rec_frames / (self.rate or 16000):.1f} s)")
+            return self.rec_name
+
+    def recording(self):
+        with self.lock:
+            return (self.rec is not None, self.rec_name, self.rec_frames / (self.rate or 16000))
 
     def run(self):
         while True:
@@ -111,6 +146,9 @@ class Receiver(threading.Thread):
                     self.peak = max(self.peak, max(abs(s) for s in pcm))
                     if self.wav:
                         self.wav.writeframes(pcm.tobytes())
+                    if self.rec:
+                        self.rec.writeframes(pcm.tobytes())
+                        self.rec_frames += n
                 if flags & FLAG_END:
                     self.live = False
                     self._close_wav()
@@ -122,25 +160,55 @@ class Receiver(threading.Thread):
 
 
 class Scope:
-    def __init__(self, rx, window_s, gain):
-        self.rx, self.window_s, self.gain = rx, window_s, gain
+    def __init__(self, rx, window_s, gain, rec_dir):
+        self.rx, self.window_s, self.gain, self.rec_dir = rx, window_s, gain, rec_dir
         self.root = tk.Tk()
         self.root.title("YAAC voice stream")
         self.root.configure(bg=BG)
         self.canvas = tk.Canvas(self.root, width=1100, height=420, bg=BG, highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True)
+
+        bar = tk.Frame(self.root, bg=BG)
+        bar.pack(fill=tk.X, padx=8, pady=4)
+        self.rec_button = tk.Button(bar, text="● REC", width=8, command=self._toggle_rec,
+                                    bg="#2a1416", fg=REC, activebackground="#3a1a1d", activeforeground=REC,
+                                    font=("Consolas", 11, "bold"), relief=tk.FLAT)
+        self.rec_button.pack(side=tk.LEFT)
+        self.rec_label = tk.Label(bar, anchor="w", bg=BG, fg=TEXT, font=("Consolas", 11),
+                                  text=f"  recordings go to {rec_dir}")
+        self.rec_label.pack(side=tk.LEFT, padx=8)
         self.status = tk.Label(self.root, anchor="w", bg=BG, fg=TEXT, font=("Consolas", 11))
         self.status.pack(fill=tk.X, padx=8, pady=4)
+
         self.root.bind("<Up>", lambda e: self._zoom(2))
         self.root.bind("<Down>", lambda e: self._zoom(0.5))
         self.root.bind("<Escape>", lambda e: self.root.destroy())
+        self.root.protocol("WM_DELETE_WINDOW", self._close)
         self._tick()
+
+    def _toggle_rec(self):
+        if self.rx.recording()[0]:
+            name = self.rx.stop_recording()
+            self.rec_button.configure(text="● REC", bg="#2a1416")
+            self.rec_label.configure(fg=TEXT, text=f"  saved {os.path.basename(name)}")
+        else:
+            self.rx.start_recording(self.rec_dir)
+            self.rec_button.configure(text="■ STOP", bg="#5a1a1f")
+
+    def _close(self):
+        self.rx.stop_recording()        # never leave a half-written WAV behind
+        self.root.destroy()
 
     def _zoom(self, f):
         self.gain = min(64, max(1, self.gain * f))
 
     def _tick(self):
         self._draw()
+        active, name, secs = self.rx.recording()
+        if active:
+            blink = int(time.time() * 2) % 2 == 0
+            self.rec_label.configure(fg=REC if blink else TEXT,
+                                     text=f"  ● recording {os.path.basename(name)}   {secs:6.1f} s")
         self.root.after(50, self._tick)
 
     def _draw(self):
@@ -215,13 +283,17 @@ def main():
     ap.add_argument("--window", type=float, default=2.0, help="seconds shown on screen")
     ap.add_argument("--gain", type=float, default=1.0, help="vertical zoom (the board applies AGC)")
     ap.add_argument("--save", metavar="DIR", help="write each session to DIR/yaac_<time>_s<N>.wav")
+    ap.add_argument("--rec-dir", metavar="DIR",
+                    help="folder for the REC button's REC_<yyyymmdd>_<hhmmss>.wav files "
+                         "(default: --save folder, else 'recordings' next to this script)")
     a = ap.parse_args()
+    rec_dir = os.path.abspath(a.rec_dir or a.save or os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings"))
 
     rx = Receiver(a.bind, a.port, a.save, int(a.window * 16000 * 4))
     rx.start()
     print(f"Listening for YAAC broadcasts on UDP port {a.port} ({a.bind or 'all interfaces'}). "
-          f"Say the wake word to the board.")
-    Scope(rx, a.window, a.gain).run()
+          f"Say the wake word to the board. REC button recordings: {rec_dir}")
+    Scope(rx, a.window, a.gain, rec_dir).run()
 
 
 if __name__ == "__main__":

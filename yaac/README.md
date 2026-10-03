@@ -4,7 +4,8 @@ Offline voice assistant built on Espressif **ESP-SR** (v2.5.5). Based on `../mic
 
 ## Stage 1 (this version): wake word
 - Say **"Alexa"**: the board plays a two-tone chime and the screen switches to **LISTENING...**
-  until you stop talking (1.2 s of silence) or 30 s pass (hard limit).
+  after you finish (1.2 s of silence), or after 5 s if you never start the command, or after
+  30 s at most.
 - Screen: title, state, live trace of the *processed* audio (after echo cancellation / speech
   enhancement / noise suppression), level meter in dBFS, `VOICE` when VAD hears speech, wake counter.
 
@@ -48,6 +49,10 @@ ESP-SR AFE (AFE_TYPE_SR, HIGH_PERF):
     pc\yaac_scope.bat                       # or: py -3 pc\yaac_scope.py
     pc\yaac_scope.bat --save recordings     # also write each session to a WAV file
     pc\yaac_scope.bat --window 4 --bind 192.168.0.129
+
+The **REC** button records everything received until it is pressed again (across wake-word
+sessions) into `REC_<yyyymmdd>_<hhmmss>.wav`, 16 kHz mono, in `pc/recordings/` (or the `--save` /
+`--rec-dir` folder). Closing the window finishes an open recording.
 
 `yaac_scope.py` is standard-library Python (tkinter): it listens on UDP port 5577, draws a
 min/max envelope of the last `--window` seconds (100 ms/div), Up/Down changes the zoom, and the

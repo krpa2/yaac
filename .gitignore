@@ -25,3 +25,4 @@ yaac/main/gemini_credentials.h
 # Python / IDE clutter
 __pycache__/
 .idea/
+yaac/pc/recordings/

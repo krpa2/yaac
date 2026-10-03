@@ -17,7 +17,7 @@ static const char *TAG = "audio_io";
 #define EXIO_SPK_AMP    IO_EXPANDER_PIN_NUM_7
 
 #define MIC_GAIN_DB     30.0f   /* ES7210 PGA */
-#define SPK_VOLUME      70      /* ES8311 0..100 */
+#define SPK_VOLUME      100     /* ES8311 0..100 */
 #define OUT_CHUNK       256     /* mono samples per write */
 
 static esp_codec_dev_handle_t mic_dev, spk_dev;
