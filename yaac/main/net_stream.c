@@ -1,3 +1,5 @@
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -82,6 +84,10 @@ static void sender_task(void *arg)
         if (xQueueReceive(queue, &pkt, portMAX_DELAY) != pdTRUE) continue;
         if (!connected) continue;
         dst.sin_addr.s_addr = bcast_addr;       /* follows the current subnet */
+        if (pkt.flags & NET_FLAG_EVENT) {       /* 'samples' = payload bytes; not in the audio stats */
+            sendto(sock, &pkt, offsetof(packet_t, pcm) + pkt.samples, 0, (struct sockaddr *)&dst, sizeof(dst));
+            continue;
+        }
         const size_t len = offsetof(packet_t, pcm) + pkt.samples * sizeof(int16_t);
         if (sendto(sock, &pkt, len, 0, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
             failed++;
@@ -110,6 +116,32 @@ static void enqueue(const int16_t *samples, size_t n, uint8_t flags)
     pkt.sample_rate = rate;
     if (n) memcpy(pkt.pcm, samples, n * sizeof(int16_t));
     xQueueSend(queue, &pkt, 0);     /* drop rather than stall the audio path */
+}
+
+void net_stream_event(net_event_t type, const char *fmt, ...)
+{
+    if (!queue) return;
+    /* Called from several tasks (audio, Gemini, websocket): own packet per call */
+    packet_t *pkt = heap_caps_malloc(sizeof(packet_t), MALLOC_CAP_SPIRAM);
+    if (!pkt) return;
+    char *payload = (char *)pkt->pcm;
+    const size_t cap = sizeof(pkt->pcm) - 1;
+    payload[0] = (char)type;
+    va_list ap;
+    va_start(ap, fmt);
+    int len = vsnprintf(payload + 1, cap, fmt, ap);     /* writes a NUL we do not send */
+    va_end(ap);
+    if (len < 0) len = 0;
+    if ((size_t)len > cap - 1) len = cap - 1;
+    memcpy(pkt->magic, "YAAC", 4);
+    pkt->version = 1;
+    pkt->flags = NET_FLAG_EVENT;
+    pkt->samples = (uint16_t)(1 + len);
+    pkt->session = session;
+    pkt->seq = 0;
+    pkt->sample_rate = rate ? rate : 16000;
+    xQueueSend(queue, pkt, 0);
+    heap_caps_free(pkt);
 }
 
 /* ---- API ----------------------------------------------------------------- */

@@ -44,6 +44,8 @@ static cJSON *tools_root;       /* parsed tools.json (keeps x-range for validati
 static esp_websocket_client_handle_t ws;
 static volatile bool ws_connected, setup_sent, ready, closing;
 static volatile bool want_session;      /* a user turn is in progress (wake word .. idle) */
+static volatile bool turn_first_audio;  /* GEMINI_STREAM event pending for this turn */
+static volatile int64_t turn_begin_us;
 
 /* Always-open session: reconnect with backoff, resume the conversation with the
  * latest handle from sessionResumptionUpdate */
@@ -106,7 +108,10 @@ static void append_text(char *dst, const char *s)
 static void flush_transcripts(void)
 {
     if (user_text[0]) ESP_LOGI(TAG, "USER: %s", user_text);
-    if (model_text[0]) ESP_LOGI(TAG, "GEMINI: %s", model_text);
+    if (model_text[0]) {
+        ESP_LOGI(TAG, "GEMINI: %s", model_text);
+        net_stream_event(NET_EV_REPLY, "%s", model_text);
+    }
     user_text[0] = model_text[0] = 0;
 }
 
@@ -152,6 +157,9 @@ static void handle_tool_call(const cJSON *tc)
         char *r = cJSON_PrintUnformatted(result);
         ESP_LOGI(TAG, "[toolCall] %s(%s)", cJSON_IsString(name) ? name->valuestring : "?", a ? a : "{}");
         ESP_LOGI(TAG, "[response] %s", r ? r : "?");
+        const cJSON *st = cJSON_GetObjectItemCaseSensitive(result, "status");
+        net_stream_event(NET_EV_TOOL_CALL, "%s(%s) -> %s", cJSON_IsString(name) ? name->valuestring : "?",
+                         a ? a : "{}", cJSON_IsString(st) ? st->valuestring : "done");
         cJSON_free(a);
         cJSON_free(r);
         cJSON *one = cJSON_CreateObject();
@@ -445,6 +453,11 @@ static void gemini_task(void *arg)
         last_activity_us = esp_timer_get_time();
         switch (it.type) {
         case ITEM_AUDIO:
+            if (turn_first_audio) {     /* first chunk of this turn going out to Gemini */
+                turn_first_audio = false;
+                net_stream_event(NET_EV_GEMINI_STREAM, "streaming to Gemini, %lld ms after the wake word",
+                                 (esp_timer_get_time() - turn_begin_us) / 1000);
+            }
             send_audio(&it);
             break;
         case ITEM_END: {
@@ -491,7 +504,8 @@ void gemini_init(void)
 void gemini_turn_begin(void)
 {
     want_session = true;
-    last_activity_us = esp_timer_get_time();
+    last_activity_us = turn_begin_us = esp_timer_get_time();
+    turn_first_audio = true;
 }
 
 void gemini_push_audio(const int16_t *pcm, int n)

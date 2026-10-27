@@ -226,6 +226,8 @@ static void fetch_task(void *arg)
              * (already in the scope ring, including this chunk) */
             if (net_stream_active()) net_stream_end();
             net_stream_begin(AUDIO_SAMPLE_RATE);
+            net_stream_event(NET_EV_WAKE, "\"%s\" #%d, mic %d, %.1f dBFS", WAKE_WORD_TEXT, wake_count,
+                             res->trigger_channel_id, res->data_volume);
             gemini_turn_begin();
             session_sum_sq = 0;
             session_samples = 0;
@@ -263,6 +265,18 @@ static void fetch_task(void *arg)
                          (now - listen_start_us) / 1e6,
                          20.0 * log10(rms / 32768.0 + 1e-9), 20.0 * log10(session_peak / 32768.0 + 1e-9));
                 state = STATE_IDLE;
+                /* Exactly one end-of-turn event (each also means: streaming to Gemini stopped) */
+                const float secs = (now - listen_start_us) / 1e6f;
+                if (timeout) {
+                    net_stream_event(NET_EV_TIME_LIMIT, "%d s limit reached: streaming to Gemini stopped",
+                                     LISTEN_TIMEOUT_MS / 1000);
+                } else if (no_command) {
+                    net_stream_event(NET_EV_NO_COMMAND, "no command within %d s after the wake word",
+                                     LISTEN_START_MS / 1000);
+                } else {
+                    net_stream_event(NET_EV_STREAM_STOP, "streaming to Gemini stopped: %.1f s of silence, turn %.1f s",
+                                     LISTEN_SILENCE_MS / 1000.0f, secs);
+                }
                 net_stream_end();
                 gemini_turn_end();
             }

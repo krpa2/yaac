@@ -27,7 +27,7 @@ from datetime import datetime
 
 PORT = 5577
 HEADER = struct.Struct("<4sBBHIII")
-FLAG_START, FLAG_END = 0x01, 0x02
+FLAG_START, FLAG_END, FLAG_EVENT = 0x01, 0x02, 0x04
 
 BG, GRID, AXIS, TRACE, TEXT, LIVE, ENDED, REC = (
     "#0b0f14", "#1c2530", "#33414f", "#50dcff", "#c8ccd4", "#3cff78", "#ffc828", "#ff4d5a")
@@ -118,6 +118,8 @@ class Receiver(threading.Thread):
                 self.bad += 1
                 continue
             magic, version, flags, n, session, seq, rate = HEADER.unpack_from(data)
+            if flags & FLAG_EVENT:
+                continue                # event packets (wake word, tool calls...): see GigiTrace
             if magic != b"YAAC" or version != 1 or len(data) < HEADER.size + 2 * n:
                 self.bad += 1
                 continue
